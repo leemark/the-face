@@ -1,0 +1,19 @@
+# Development tracking files
+DEVELOPMENT_LOG.md
+CURSOR_CONTEXT.md
+
+# Node modules and dependencies if added later
+node_modules/
+package-lock.json
+
+# IDE files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs and debug files
+*.log
+npm-debug.log* 
