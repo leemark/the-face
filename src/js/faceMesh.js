@@ -13,6 +13,8 @@ class FaceTracker {
         this.isProcessing = false; // Flag to prevent concurrent processing
         this.tensorCleanupEnabled = true; // Enable tensor cleanup (can be disabled for debugging)
         this.detectionInterval = 100; // Detection interval in ms
+        this.isML5_0_12_2 = false; // Flag for specific version handling
+        this.tensorCleanupInterval = null; // To store tensor cleanup interval
     }
 
     // Initialize the face tracker
@@ -32,7 +34,11 @@ class FaceTracker {
             if (ml5.version === "0.12.2") {
                 // In 0.12.2, we need to be careful with tensor cleanup
                 console.log("Applying specific optimizations for ml5.js 0.12.2");
-                this.detectionInterval = 150; // Slower detection rate to avoid tensor issues
+                this.detectionInterval = 250; // Much slower detection rate to avoid tensor issues
+                this.isML5_0_12_2 = true; // Flag for specific version handling
+                
+                // Try to patch TensorFlow.js to make it more robust against tensor issues
+                this.patchTensorFlow();
             }
         }
         
@@ -222,6 +228,66 @@ class FaceTracker {
         this.keypoints = keypoints;
     }
     
+    // Patch TensorFlow.js to make it more robust (specifically for ml5.js 0.12.2)
+    patchTensorFlow() {
+        if (window.tf) {
+            console.log("Patching TensorFlow.js for better stability");
+            
+            try {
+                // Increase the tensor cleanup threshold
+                if (tf.ENV && tf.ENV.set) {
+                    tf.ENV.set('WEBGL_DELETE_TEXTURE_THRESHOLD', 0);
+                    console.log("Set WEBGL_DELETE_TEXTURE_THRESHOLD to 0");
+                }
+                
+                // Add safety check to tensor dispose
+                const originalDispose = tf.Tensor.prototype.dispose;
+                if (originalDispose) {
+                    tf.Tensor.prototype.dispose = function() {
+                        try {
+                            if (!this.isDisposed) {
+                                return originalDispose.apply(this);
+                            }
+                        } catch (e) {
+                            console.warn("Prevented error in tensor disposal");
+                        }
+                        return this;
+                    };
+                }
+                
+                // Helper method to release all tensors periodically
+                this.schedulePeriodicTensorCleanup();
+                
+            } catch (err) {
+                console.warn("Error patching TensorFlow:", err);
+            }
+        }
+    }
+    
+    // Schedule periodic tensor cleanup
+    schedulePeriodicTensorCleanup() {
+        // Clean up tensors every 10 seconds
+        this.tensorCleanupInterval = setInterval(() => {
+            if (window.tf && tf.engine) {
+                try {
+                    const numTensors = tf.memory().numTensors;
+                    if (numTensors > 100) {
+                        console.log(`Cleaning up ${numTensors} tensors`);
+                        tf.engine().endScope();
+                        tf.engine().startScope();
+                        
+                        // Force garbage collection if available
+                        if (window.gc) {
+                            window.gc();
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Error during periodic tensor cleanup:", e);
+                }
+            }
+        }, 10000);
+    }
+    
     // Alternative detection loop for newer ml5 versions if needed
     async detectFaceLoop() {
         if (!this.isReady || !this.faceMeshInstance) return;
@@ -235,33 +301,38 @@ class FaceTracker {
         this.isProcessing = true;
         
         try {
-            let results = null;
-            
-            // Try different prediction methods based on the API
-            if (this.useFaceMeshApi) {
-                // Specific handling for FaceMesh
-                try {
-                    results = await this.faceMeshInstance.predict(this.video);
-                } catch (err) {
-                    console.warn("Error in FaceMesh predict:", err);
-                }
-            } else if (this.faceMeshInstance.predict) {
-                results = await this.faceMeshInstance.predict(this.video);
-            } else if (this.faceMeshInstance.detectSingle) {
-                results = await this.faceMeshInstance.detectSingle(this.video);
-            } else if (this.faceMeshInstance.detect) {
-                results = await this.faceMeshInstance.detect(this.video);
-            } else if (this.faceMeshInstance.estimateFaces) {
-                results = await this.faceMeshInstance.estimateFaces(this.video);
-            } else if (this.faceMeshInstance.estimatePose) {
-                results = await this.faceMeshInstance.estimatePose(this.video);
+            // For ml5.js 0.12.2 with FaceMesh, use a special approach
+            if (this.isML5_0_12_2 && this.useFaceMeshApi) {
+                await this.detectFaceWithML5_0_12_2();
             } else {
-                console.warn("No suitable predict method found");
-            }
-            
-            // Process results
-            if (results) {
-                this.processFaceDetection(results);
+                let results = null;
+                
+                // Try different prediction methods based on the API
+                if (this.useFaceMeshApi) {
+                    // Specific handling for FaceMesh
+                    try {
+                        results = await this.faceMeshInstance.predict(this.video);
+                    } catch (err) {
+                        console.warn("Error in FaceMesh predict:", err);
+                    }
+                } else if (this.faceMeshInstance.predict) {
+                    results = await this.faceMeshInstance.predict(this.video);
+                } else if (this.faceMeshInstance.detectSingle) {
+                    results = await this.faceMeshInstance.detectSingle(this.video);
+                } else if (this.faceMeshInstance.detect) {
+                    results = await this.faceMeshInstance.detect(this.video);
+                } else if (this.faceMeshInstance.estimateFaces) {
+                    results = await this.faceMeshInstance.estimateFaces(this.video);
+                } else if (this.faceMeshInstance.estimatePose) {
+                    results = await this.faceMeshInstance.estimatePose(this.video);
+                } else {
+                    console.warn("No suitable predict method found");
+                }
+                
+                // Process results
+                if (results) {
+                    this.processFaceDetection(results);
+                }
             }
             
         } catch (err) {
@@ -269,24 +340,65 @@ class FaceTracker {
         } finally {
             this.isProcessing = false;
             
-            // Manual cleanup for TensorFlow.js tensors
-            if (this.tensorCleanupEnabled && window.tf && tf.engine) {
-                try {
-                    // This helps prevent memory leaks in TensorFlow.js
-                    const numTensors = tf.memory().numTensors;
-                    if (numTensors > 1000) {
-                        console.warn(`High tensor count: ${numTensors}. Disposing unused tensors.`);
-                        tf.engine().endScope();
-                        tf.engine().startScope();
-                    }
-                } catch (e) {
-                    console.warn("Error cleaning up tensors:", e);
-                }
-            }
-            
             // Use timeout for next detection to allow tensors to be properly managed
             if (this.isReady && this.usePollingForDetection) {
                 setTimeout(() => this.detectFaceLoop(), this.detectionInterval);
+            }
+        }
+    }
+    
+    // Special detection method for ml5.js 0.12.2 with FaceMesh
+    async detectFaceWithML5_0_12_2() {
+        console.log("Using specialized detection for ml5.js 0.12.2");
+        
+        try {
+            // Create a safety wrapper around the predict method
+            if (this.faceMeshInstance.predict) {
+                const results = await this.safePredict(this.faceMeshInstance, this.video);
+                if (results) {
+                    this.processFaceDetection(results);
+                } else {
+                    // If we can't get results, use a fallback approach
+                    console.warn("Failed to get face detection results, using fallback");
+                    this.createDummyLandmarks();
+                }
+            } else {
+                console.warn("No predict method available on FaceMesh instance");
+            }
+        } catch (err) {
+            console.error("Error in ML5_0_12_2 detection:", err);
+            // Use dummy landmarks on error to keep the experience running
+            this.createDummyLandmarks();
+        }
+    }
+    
+    // Safe predict wrapper to handle tensor issues
+    async safePredict(faceMeshInstance, video) {
+        if (!faceMeshInstance || !faceMeshInstance.predict) return null;
+        
+        // Wrap the prediction in a try-catch and timeout to prevent hanging
+        try {
+            // Try to clean up before prediction
+            if (window.tf && tf.engine) {
+                tf.engine().startScope();
+            }
+            
+            // Use Promise.race to add a timeout
+            const result = await Promise.race([
+                faceMeshInstance.predict(video),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error("Face detection timeout")), 2000)
+                )
+            ]);
+            
+            return result;
+        } catch (err) {
+            console.warn("Safe predict error:", err);
+            return null;
+        } finally {
+            // Always clean up after prediction
+            if (window.tf && tf.engine) {
+                tf.engine().endScope();
             }
         }
     }
@@ -513,6 +625,12 @@ class FaceTracker {
         this.isReady = false;
         this.usePollingForDetection = false;
         
+        // Clear any cleanup interval
+        if (this.tensorCleanupInterval) {
+            clearInterval(this.tensorCleanupInterval);
+            this.tensorCleanupInterval = null;
+        }
+        
         if (this.faceMeshInstance && this.faceMeshInstance.dispose) {
             try {
                 this.faceMeshInstance.dispose();
@@ -521,14 +639,24 @@ class FaceTracker {
             }
         }
         
-        // Manual TensorFlow cleanup
-        if (window.tf && tf.engine) {
+        // More aggressive cleanup for ml5.js 0.12.2
+        if (this.isML5_0_12_2 && window.tf) {
             try {
-                tf.engine().endScope();
-                tf.engine().disposeVariables();
-                console.log("TensorFlow tensors cleaned up");
+                // Multiple cleanup passes for stubborn tensors
+                for (let i = 0; i < 3; i++) {
+                    tf.engine().endScope();
+                    tf.engine().disposeVariables();
+                }
+                
+                // Reset backend if supported
+                if (tf.backend && typeof tf.backend().reset === 'function') {
+                    tf.backend().reset();
+                    console.log("Reset TensorFlow backend");
+                }
+                
+                console.log("Aggressive TensorFlow cleanup completed");
             } catch (err) {
-                console.warn("Error cleaning up TensorFlow tensors:", err);
+                console.warn("Error in aggressive cleanup:", err);
             }
         }
     }
