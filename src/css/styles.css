@@ -58,6 +58,12 @@ h1 {
     letter-spacing: 0.2rem;
 }
 
+h2 {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+    color: #e74c3c;
+}
+
 p {
     margin-bottom: 1.5rem;
     max-width: 600px;
@@ -93,4 +99,36 @@ button:hover {
 /* Canvas styling */
 canvas {
     display: block;
+}
+
+/* Error container */
+#error-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.9);
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+    text-align: center;
+    padding: 2rem;
+}
+
+#error-message {
+    color: #e74c3c;
+    font-weight: bold;
+    margin-bottom: 1rem;
+}
+
+#error-container button {
+    background-color: #e74c3c;
+    margin-top: 1rem;
+}
+
+#error-container button:hover {
+    background-color: #c0392b;
 } 

@@ -20,22 +20,83 @@ class FaceTracker {
         this.video.hide(); // Hide the video element
         
         // Load facemesh model
-        this.faceMesh = ml5.facemesh(this.video, this.options, () => {
-            console.log('FaceMesh model loaded');
-            this.isReady = true;
-        });
+        // Updated to use the correct ml5.js API
+        this.faceMesh = ml5.facemesh || ml5.FaceMesh;
         
-        // Listen for face detections
-        this.faceMesh.on('face', (results) => {
-            this.processFaceDetection(results);
-        });
+        if (!this.faceMesh) {
+            console.error("FaceMesh not found in ml5 library. Checking for alternative APIs...");
+            
+            // Try alternative API names that might be used in different ml5 versions
+            if (ml5.face) {
+                console.log("Found ml5.face, trying that instead");
+                this.faceMesh = ml5.face;
+            } else if (ml5.faceApi) {
+                console.log("Found ml5.faceApi, trying that instead");
+                this.faceMesh = ml5.faceApi;
+            } else {
+                throw new Error("Could not find FaceMesh functionality in ml5 library");
+            }
+        }
+        
+        console.log("Creating face detector with options:", this.options);
+        
+        // Create a new instance with the current API
+        try {
+            this.faceMeshInstance = await this.faceMesh(
+                this.video, 
+                this.options, 
+                () => {
+                    console.log('FaceMesh model loaded');
+                    this.isReady = true;
+                }
+            );
+            
+            // Listen for face detections
+            if (this.faceMeshInstance && this.faceMeshInstance.on) {
+                this.faceMeshInstance.on('face', (results) => {
+                    this.processFaceDetection(results);
+                });
+            } else {
+                console.warn("FaceMesh instance doesn't support 'on' method, trying alternative approach");
+                // For newer ml5 versions that might use a different pattern
+                this.detectFaceLoop();
+            }
+        } catch (err) {
+            console.error("Error initializing FaceMesh:", err);
+            throw err;
+        }
+    }
+    
+    // Alternative detection loop for newer ml5 versions if needed
+    async detectFaceLoop() {
+        if (!this.isReady) return;
+        
+        try {
+            if (this.faceMeshInstance && this.faceMeshInstance.predict) {
+                const results = await this.faceMeshInstance.predict(this.video);
+                this.processFaceDetection(results);
+            }
+        } catch (err) {
+            console.error("Error in face detection loop:", err);
+        }
+        
+        // Continue detection loop
+        setTimeout(() => this.detectFaceLoop(), 100);
     }
 
     // Process detected face and extract key landmarks
     processFaceDetection(results) {
         if (results && results.length > 0) {
-            // Store all landmarks
-            this.landmarks = results[0].scaledMesh;
+            // Different ml5 versions might return different data structures
+            // Try to handle various formats
+            if (results[0].scaledMesh) {
+                // Store all landmarks
+                this.landmarks = results[0].scaledMesh;
+            } else if (results[0].mesh) {
+                this.landmarks = results[0].mesh;
+            } else if (results[0].landmarks && results[0].landmarks.positions) {
+                this.landmarks = results[0].landmarks.positions;
+            }
             
             // Extract key facial feature points
             this.keypoints = this.extractKeypoints(this.landmarks);
