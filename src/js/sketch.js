@@ -86,6 +86,13 @@ function draw() {
             
             // Debug mode: show video and facial landmarks
             if (isDebugMode) {
+                // Draw debug panel background
+                push();
+                fill(0, 0, 0, 180);
+                noStroke();
+                rect(0, 0, 250, height);
+                pop();
+                
                 push();
                 // Draw mirrored video in corner
                 translate(width, 0);
@@ -104,27 +111,319 @@ function draw() {
                     fill(0, 255, 0);
                     noStroke();
                     for (let i = 0; i < landmarks.length; i++) {
-                        const [x, y] = landmarks[i];
+                        // Handle different landmark formats
+                        let x, y;
+                        if (Array.isArray(landmarks[i])) {
+                            [x, y] = landmarks[i];
+                        } else if (landmarks[i] && typeof landmarks[i] === 'object') {
+                            x = landmarks[i].x;
+                            y = landmarks[i].y;
+                        } else {
+                            continue;
+                        }
                         ellipse(x * scaleX, y * scaleY, 2, 2);
                     }
                 }
                 pop();
                 
-                // Draw keypoints used for attraction
+                // Draw text information about face tracking
                 push();
-                stroke(255, 0, 0);
-                strokeWeight(4);
-                noFill();
-                for (let point of keypoints) {
-                    point(point.x, point.y);
-                }
+                fill(255);
+                textSize(14);
+                textAlign(LEFT, TOP);
+                text(`ml5.js version: ${ml5.version || "unknown"}`, 10, vh + 10);
+                text(`Face tracking method: ${getFaceTrackingMethod()}`, 10, vh + 30);
+                text(`Landmarks detected: ${landmarks ? landmarks.length : 0}`, 10, vh + 50);
+                text(`Keypoints for particles: ${keypoints ? keypoints.length : 0}`, 10, vh + 70);
                 pop();
+                
+                // Draw facial feature indicators on main canvas
+                drawFacialFeatureIndicators(keypoints);
             }
         }
     } else {
         // Fallback mode: just show particles with random movement
         runFallbackMode();
+        
+        // Debug mode: show fallback info
+        if (isDebugMode) {
+            push();
+            fill(255);
+            textSize(16);
+            textAlign(LEFT, TOP);
+            text("Running in fallback mode - no face tracking available", 10, 50);
+            text("Using simulated face landmarks", 10, 70);
+            pop();
+        }
     }
+}
+
+// Helper function to get current face tracking method
+function getFaceTrackingMethod() {
+    if (!faceTracker) return "None";
+    
+    if (faceTracker.useFaceMeshApi) return "FaceMesh";
+    if (faceTracker.usePoseNetApi) return "PoseNet";
+    if (faceTracker.useFaceApiApi) return "FaceAPI";
+    if (faceTracker.useImageClassifier) return "ImageClassifier (fallback)";
+    
+    return "Unknown";
+}
+
+// Draw indicators for different facial features
+function drawFacialFeatureIndicators(keypoints) {
+    if (!keypoints || keypoints.length === 0) return;
+    
+    // Group keypoints by facial feature (approximately)
+    const features = categorizeFacialKeypoints(keypoints);
+    
+    push();
+    textAlign(CENTER, CENTER);
+    textSize(12);
+    
+    // Draw eye indicators
+    if (features.leftEye.length > 0) {
+        drawFeatureIndicator(features.leftEye, color(0, 255, 255), "Left Eye");
+    }
+    
+    if (features.rightEye.length > 0) {
+        drawFeatureIndicator(features.rightEye, color(0, 255, 255), "Right Eye");
+    }
+    
+    // Draw mouth indicator
+    if (features.mouth.length > 0) {
+        drawFeatureIndicator(features.mouth, color(255, 0, 255), "Mouth");
+    }
+    
+    // Draw nose indicator
+    if (features.nose.length > 0) {
+        drawFeatureIndicator(features.nose, color(255, 255, 0), "Nose");
+    }
+    
+    // Draw face contour indicator
+    if (features.faceContour.length > 0) {
+        drawFeatureIndicator(features.faceContour, color(0, 255, 0), "Face");
+    }
+    
+    // Draw eyebrow indicators
+    if (features.leftEyebrow.length > 0) {
+        drawFeatureIndicator(features.leftEyebrow, color(255, 128, 0), "L. Brow");
+    }
+    
+    if (features.rightEyebrow.length > 0) {
+        drawFeatureIndicator(features.rightEyebrow, color(255, 128, 0), "R. Brow");
+    }
+    
+    // Draw other keypoints
+    if (features.other.length > 0) {
+        drawFeatureIndicator(features.other, color(128, 128, 128), "Other");
+    }
+    
+    pop();
+}
+
+// Draw indicator for a specific facial feature
+function drawFeatureIndicator(points, featureColor, label) {
+    if (!points || points.length === 0) return;
+    
+    // Calculate center of feature
+    let centerX = 0;
+    let centerY = 0;
+    for (const point of points) {
+        centerX += point.x;
+        centerY += point.y;
+    }
+    centerX /= points.length;
+    centerY /= points.length;
+    
+    // Draw points
+    noFill();
+    stroke(featureColor);
+    strokeWeight(2);
+    
+    // Connect points if more than one
+    if (points.length > 1) {
+        beginShape();
+        for (const point of points) {
+            vertex(point.x, point.y);
+        }
+        if (points.length > 2) {
+            endShape(CLOSE); // Close the shape if 3+ points
+        } else {
+            endShape(); // Don't close with just 2 points
+        }
+    }
+    
+    // Draw individual points
+    for (const point of points) {
+        push();
+        fill(featureColor);
+        noStroke();
+        ellipse(point.x, point.y, 5, 5);
+        pop();
+    }
+    
+    // Draw label
+    fill(featureColor);
+    stroke(0);
+    strokeWeight(3);
+    text(label, centerX, centerY - 15);
+}
+
+// Categorize keypoints into facial features
+function categorizeFacialKeypoints(keypoints) {
+    // Initialize feature categories
+    const features = {
+        leftEye: [],
+        rightEye: [],
+        nose: [],
+        mouth: [],
+        leftEyebrow: [],
+        rightEyebrow: [],
+        faceContour: [],
+        other: []
+    };
+    
+    if (!keypoints || keypoints.length === 0) return features;
+    
+    // If few keypoints, use position-based categorization
+    if (keypoints.length < 20) {
+        return categorizeByPosition(keypoints);
+    }
+    
+    // For more keypoints, try to use known patterns
+    
+    // Calculate face center and bounds
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let centerX = 0, centerY = 0;
+    
+    for (const point of keypoints) {
+        centerX += point.x;
+        centerY += point.y;
+        minX = min(minX, point.x);
+        maxX = max(maxX, point.x);
+        minY = min(minY, point.y);
+        maxY = max(maxY, point.y);
+    }
+    
+    centerX /= keypoints.length;
+    centerY /= keypoints.length;
+    
+    const faceWidth = maxX - minX;
+    const faceHeight = maxY - minY;
+    
+    // Categorize each keypoint based on its position relative to the face center
+    for (const point of keypoints) {
+        // Normalize position relative to face center
+        const relX = (point.x - centerX) / faceWidth;
+        const relY = (point.y - centerY) / faceHeight;
+        
+        // Left eye: upper left quadrant
+        if (relX < -0.15 && relY < -0.1 && relY > -0.4) {
+            features.leftEye.push(point);
+        }
+        // Right eye: upper right quadrant
+        else if (relX > 0.15 && relY < -0.1 && relY > -0.4) {
+            features.rightEye.push(point);
+        }
+        // Nose: center
+        else if (abs(relX) < 0.15 && abs(relY) < 0.15) {
+            features.nose.push(point);
+        }
+        // Mouth: lower center
+        else if (abs(relX) < 0.25 && relY > 0.15 && relY < 0.4) {
+            features.mouth.push(point);
+        }
+        // Left eyebrow: far upper left
+        else if (relX < -0.15 && relY < -0.3) {
+            features.leftEyebrow.push(point);
+        }
+        // Right eyebrow: far upper right
+        else if (relX > 0.15 && relY < -0.3) {
+            features.rightEyebrow.push(point);
+        }
+        // Face contour: outer points
+        else if (abs(relX) > 0.35 || abs(relY) > 0.4) {
+            features.faceContour.push(point);
+        }
+        // Other: anything not categorized
+        else {
+            features.other.push(point);
+        }
+    }
+    
+    return features;
+}
+
+// Categorize keypoints based on position when we have few points
+function categorizeByPosition(keypoints) {
+    // Initialize feature categories
+    const features = {
+        leftEye: [],
+        rightEye: [],
+        nose: [],
+        mouth: [],
+        leftEyebrow: [],
+        rightEyebrow: [],
+        faceContour: [],
+        other: []
+    };
+    
+    // For fallback or limited points, use simpler categorization
+    // Calculate center and dimensions
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let centerX = 0, centerY = 0;
+    
+    for (const point of keypoints) {
+        centerX += point.x;
+        centerY += point.y;
+        minX = min(minX, point.x);
+        maxX = max(maxX, point.x);
+        minY = min(minY, point.y);
+        maxY = max(maxY, point.y);
+    }
+    
+    centerX /= keypoints.length;
+    centerY /= keypoints.length;
+    
+    // Sort points by distance from center
+    const sortedByDistance = [...keypoints].sort((a, b) => {
+        const distA = dist(a.x, a.y, centerX, centerY);
+        const distB = dist(b.x, b.y, centerX, centerY);
+        return distA - distB;
+    });
+    
+    // Center point is nose
+    if (sortedByDistance.length > 0) {
+        features.nose.push(sortedByDistance[0]);
+    }
+    
+    // Find eyes by looking for points in upper quadrants
+    for (const point of keypoints) {
+        const relX = point.x - centerX;
+        const relY = point.y - centerY;
+        
+        // Left eye
+        if (relX < 0 && relY < 0) {
+            features.leftEye.push(point);
+        }
+        // Right eye
+        else if (relX > 0 && relY < 0) {
+            features.rightEye.push(point);
+        }
+        // Mouth
+        else if (abs(relX) < (maxX - minX) * 0.3 && relY > 0) {
+            features.mouth.push(point);
+        }
+        // Face contour - outermost points
+        else if (point.x === minX || point.x === maxX || point.y === minY || point.y === maxY) {
+            features.faceContour.push(point);
+        }
+    }
+    
+    return features;
 }
 
 // Fallback mode when face tracking is not available
@@ -208,6 +507,12 @@ function setupSketch() {
 function resetSketch() {
     // Hide the canvas
     canvas.style('display', 'none');
+    
+    // Clean up existing resources
+    if (faceTracker) {
+        // Properly dispose of face tracker resources to prevent tensor errors
+        faceTracker.dispose();
+    }
     
     // Create fresh objects
     particleSystem = new ParticleSystem(600);
